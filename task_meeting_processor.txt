@@ -1,0 +1,376 @@
+You are building the skeleton of a FastAPI service called "meeting-processor"
+inside the current directory (~/Documents/GitHub/meeting-processor).
+
+Do NOT touch anything outside the current directory.
+Do NOT run git commands.
+Do NOT deploy to Render.
+Do NOT write A2A code (that's a later task).
+Do NOT attempt to connect to a real database (that's a later task).
+
+Build exactly these files. Do not create others.
+
+============================
+FILE STRUCTURE
+============================
+app/__init__.py              (empty)
+app/config.py
+app/db.py
+app/models.py
+app/main.py
+app/agents/__init__.py       (empty)
+app/agents/triage.py
+app/agents/action_items.py
+app/agents/decisions.py
+app/agents/risks.py
+app/agents/summary.py
+app/agents/guardrails.py
+app/routes/__init__.py       (empty)
+app/routes/analyse.py
+app/routes/meetings.py
+tests/__init__.py            (empty)
+tests/test_health.py
+tests/test_analyse.py
+requirements.txt
+.env.example
+Dockerfile
+README.md
+.gitignore
+
+============================
+app/config.py
+============================
+Use pydantic-settings. Load from .env.
+
+class Settings(BaseSettings):
+    openai_api_key: str
+    database_url: str
+    allowed_origin: str = "http://localhost:8000"
+    agent_model: str = "gpt-4o-mini"
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+settings = Settings()
+
+============================
+app/db.py
+============================
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from app.config import settings
+
+class Base(DeclarativeBase):
+    pass
+
+engine = create_engine(settings.database_url, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+============================
+app/models.py
+============================
+Two parts: Pydantic schemas (for API) and SQLAlchemy models (for DB).
+
+Pydantic schemas:
+
+class ActionItem(BaseModel):
+    owner: str
+    task: str
+    due_date: str | None = None
+    source_quote: str
+
+class Decision(BaseModel):
+    description: str
+    made_by: str | None = None
+    source_quote: str
+
+class Risk(BaseModel):
+    description: str
+    severity: Literal["low", "medium", "high"]
+    source_quote: str
+
+class MeetingAnalysis(BaseModel):
+    summary: str
+    action_items: list[ActionItem]
+    decisions: list[Decision]
+    risks: list[Risk]
+
+class AnalyseRequest(BaseModel):
+    title: str
+    transcript: str
+
+class AnalyseResponse(BaseModel):
+    meeting_id: UUID
+    analysis: MeetingAnalysis
+
+class MeetingOut(BaseModel):
+    id: UUID
+    title: str
+    created_at: datetime
+    analysis: MeetingAnalysis | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+SQLAlchemy model:
+
+from sqlalchemy import Column, String, DateTime, JSON
+from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
+import uuid
+
+class Meeting(Base):
+    __tablename__ = "meetings"
+    id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String, nullable=False)
+    transcript = Column(String, nullable=False)
+    analysis = Column(JSONB, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+Import Meeting into app/db.py or wherever Base.metadata needs it
+registered, or ensure app/models.py is imported before Base.metadata.create_all.
+
+============================
+app/agents/triage.py
+============================
+Use the OpenAI Agents SDK:
+
+from agents import Agent, Runner, handoff
+from app.config import settings
+from app.agents.action_items import action_items_agent
+from app.agents.decisions import decisions_agent
+from app.agents.risks import risks_agent
+from app.agents.summary import summary_agent
+
+triage_agent = Agent(
+    name="Triage",
+    instructions=(
+        "You receive a meeting transcript. Identify which specialists are "
+        "needed and hand off to them. Always hand off to summary, then "
+        "to action_items, then decisions, then risks, in that order."
+    ),
+    model=settings.agent_model,
+    handoffs=[
+        handoff(action_items_agent),
+        handoff(decisions_agent),
+        handoff(risks_agent),
+        handoff(summary_agent),
+    ],
+)
+
+async def run_triage(transcript: str):
+    result = await Runner.run(triage_agent, input=transcript)
+    return result
+
+Check the installed openai-agents SDK for the correct API shape
+(v0.x may use Runner.run_sync vs Runner.run). If the SDK version installed
+uses a different signature, adapt — but keep the handoff structure.
+
+============================
+app/agents/{action_items,decisions,risks,summary}.py
+============================
+Each defines one Agent with a narrow instructions prompt:
+
+action_items_agent = Agent(
+    name="ActionItemExtractor",
+    instructions=(
+        "Extract every action item from the transcript. "
+        "For each: owner, task, due date if mentioned, "
+        "and the exact quote from the transcript that supports it. "
+        "Return ONLY the action items."
+    ),
+    model=settings.agent_model,
+    output_type=list[ActionItem],
+)
+
+decisions_agent = similar (Decision)
+risks_agent = similar (Risk)
+summary_agent = similar (str — three-sentence summary)
+
+============================
+app/agents/guardrails.py
+============================
+Two functions:
+
+def validate_input(transcript: str) -> None:
+    if len(transcript) < 100:
+        raise ValueError("Transcript too short (< 100 chars)")
+    if len(transcript) > 50_000:
+        raise ValueError("Transcript too long (> 50,000 chars)")
+
+def validate_output(analysis: MeetingAnalysis) -> None:
+    if not analysis.summary:
+        raise ValueError("Missing summary")
+    # basic structural validation — Pydantic already enforces types
+
+============================
+app/routes/analyse.py
+============================
+POST /analyse — accepts AnalyseRequest, returns AnalyseResponse.
+
+async def analyse_endpoint(req: AnalyseRequest, db: Session = Depends(get_db)):
+    validate_input(req.transcript)
+    # Run the agent
+    # The Runner result must be parsed into MeetingAnalysis.
+    # For the skeleton, assume the SDK returns a final output that can
+    # be coerced into MeetingAnalysis. If parsing is complex, use a
+    # structured-output helper or a Pydantic parse loop.
+    analysis = await run_and_parse(req.transcript)
+    validate_output(analysis)
+    # Save
+    meeting = Meeting(title=req.title, transcript=req.transcript,
+                      analysis=analysis.model_dump())
+    db.add(meeting); db.commit(); db.refresh(meeting)
+    return AnalyseResponse(meeting_id=meeting.id, analysis=analysis)
+
+Include a helper run_and_parse that runs the triage agent and coerces
+its output. If the exact SDK-to-Pydantic coercion is uncertain, put a
+clear TODO comment and implement a best-effort version that returns
+a MeetingAnalysis. Tests will mock this function.
+
+Rate limit via slowapi: @limiter.limit("10/minute") on the endpoint.
+
+============================
+app/routes/meetings.py
+============================
+GET /meetings — returns list[MeetingOut] (id, title, created_at only,
+analysis=None)
+GET /meetings/{id} — returns full MeetingOut with analysis
+
+============================
+app/main.py
+============================
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from app.config import settings
+from app.routes import analyse, meetings
+
+limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(title="Meeting Processor", version="0.1.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.allowed_origin],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(analyse.router)
+app.include_router(meetings.router)
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+============================
+tests/test_health.py
+============================
+from fastapi.testclient import TestClient
+from app.main import app
+
+def test_health():
+    client = TestClient(app)
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+============================
+tests/test_analyse.py
+============================
+Mock run_and_parse and the DB session. Assert the response shape
+matches AnalyseResponse and that the DB row would be created.
+
+Use pytest with monkeypatch or unittest.mock to patch
+app.routes.analyse.run_and_parse.
+
+============================
+requirements.txt
+============================
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.0
+pydantic-settings==2.6.0
+openai-agents
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+slowapi==0.1.9
+pytest==8.3.0
+pytest-asyncio==0.24.0
+httpx==0.27.0
+python-dotenv==1.0.1
+
+============================
+.env.example
+============================
+OPENAI_API_KEY=sk-...
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/meetings
+ALLOWED_ORIGIN=http://localhost:8000
+AGENT_MODEL=gpt-4o-mini
+
+============================
+Dockerfile
+============================
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+============================
+README.md
+============================
+Brief:
+- One-line project description
+- Setup: create venv, pip install, copy .env.example to .env, fill keys
+- API endpoints table (POST /analyse, GET /meetings, GET /meetings/{id}, GET /health)
+- Design decisions: triage + specialists, Pydantic output guardrails
+- What's NOT here yet: A2A, followup workflow, chat agent (later tasks)
+
+============================
+.gitignore
+============================
+__pycache__/
+*.pyc
+.venv/
+.env
+trajectories/
+.pytest_cache/
+*.egg-info/
+
+============================
+VERIFICATION — run these and paste the output
+============================
+
+1. python -m py_compile $(find app tests -name "*.py")
+   Expected: no output (all files compile)
+
+2. python -c "from app.main import app; print([r.path for r in app.routes])"
+   Expected: routes list including /health, /analyse, /meetings, /meetings/{id}
+
+3. python -m pytest tests/ -v
+   Expected: 3-5 tests passing
+
+4. After verification, print the file tree:
+   find . -name "*.py" -not -path "*/__pycache__/*" | sort
+
+============================
+IMPORTANT
+============================
+- If the openai-agents SDK version installed doesn't match the API I described,
+  inspect the SDK and adapt the code. Do not invent an API.
+- If any file fails to compile in step 1, FIX IT before moving on.
+- Do NOT leave a file half-written. Write each file atomically.
+- If pytest fails, read the error and fix the source file.
+
+Then STOP. Do not commit. Do not deploy.
