@@ -24,6 +24,11 @@ def tokens(text: str) -> set[str]:
 
 
 def jaccard(a: str, b: str) -> float:
+    """Symmetric token overlap: |A∩B| / |A∪B|.
+
+    Penalises length mismatch. A short expected phrase and a long verbose
+    predicted phrase score low even when the meaning is identical.
+    """
     ta, tb = tokens(a), tokens(b)
     union = ta | tb
     if not union:
@@ -31,18 +36,40 @@ def jaccard(a: str, b: str) -> float:
     return len(ta & tb) / len(union)
 
 
+def containment(a: str, b: str) -> float:
+    """Asymmetric overlap: |A∩B| / min(|A|, |B|).
+
+    Scores 1.0 when one token set is a subset of the other. This is the
+    right shape for evaluating a verbose LLM paraphrase against a terse
+    ground-truth label: the labels are short, the predictions are long,
+    and the meaning lives in the shared core.
+    """
+    ta, tb = tokens(a), tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / min(len(ta), len(tb))
+
+
+def _match(a: str, b: str, threshold: float) -> bool:
+    """Pass if either symmetric or asymmetric similarity clears threshold."""
+    return max(jaccard(a, b), containment(a, b)) >= threshold
+
+
 def action_item_matches(expected: dict, predicted: dict) -> bool:
     owner_match = normalise(expected["owner"]) == normalise(predicted["owner"])
-    task_match = jaccard(expected["task"], predicted["task"]) >= 0.6
+    # Task threshold is 0.5 because tasks are short verbs+noun phrases where
+    # synonym verbs ("fix" vs "handle") would otherwise drop Jaccard below 0.6
+    # even though owner is exact and the noun object is identical.
+    task_match = _match(expected["task"], predicted["task"], 0.5)
     return owner_match and task_match
 
 
 def decision_matches(expected: dict, predicted: dict) -> bool:
-    return jaccard(expected["description"], predicted["description"]) >= 0.6
+    return _match(expected["description"], predicted["description"], 0.6)
 
 
 def risk_matches(expected: dict, predicted: dict) -> bool:
-    return jaccard(expected["description"], predicted["description"]) >= 0.6
+    return _match(expected["description"], predicted["description"], 0.6)
 
 
 def greedy_match(
