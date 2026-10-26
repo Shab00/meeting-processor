@@ -28,6 +28,16 @@ Tables are not created automatically yet. Once a database is available, call `ap
 | GET    | `/meetings`      | List meetings (id, title, created_at)                         |
 | GET    | `/meetings/{id}` | Get one meeting with its full analysis                        |
 | GET    | `/health`        | Liveness check                                                |
+| GET    | `/.well-known/agent-card.json` | A2A agent card (skill `analyse_meeting`)        |
+| POST   | `/`              | A2A JSON-RPC endpoint (`SendMessage`, `GetTask`, ...)          |
+
+## A2A
+
+The service is also an A2A (Agent2Agent, a2a-sdk 1.x) server, in `a2a_server/`. Send a text message containing the transcript and the task completes with one `application/json` artifact holding a serialised `MeetingAnalysis`. It runs the same `run_and_parse` pipeline and input/output guardrails as `/analyse`, but it does **not** store a `Meeting` row (A2A requests carry no title) and is not rate limited. The task store is in-memory, so tasks are lost on restart. Cancellation is not supported.
+
+The agent card advertises `http://localhost:8000` (`a2a_server/agent_card.py`). Change it before deploying.
+
+Clients: `meeting-chat` and `meeting-followup` each include an `a2a_client/` package.
 
 ## Design decisions
 
@@ -38,7 +48,6 @@ Tables are not created automatically yet. Once a database is available, call `ap
 
 ## Not here yet
 
-- A2A (agent-to-agent) interface
 - Follow-up workflow
 - Chat agent over past meetings
 - Database migrations and a real database connection
