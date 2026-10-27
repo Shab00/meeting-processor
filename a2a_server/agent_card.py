@@ -1,7 +1,15 @@
+import os
+
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 from a2a.utils.constants import PROTOCOL_VERSION_CURRENT, TransportProtocol
 
-AGENT_URL = "http://localhost:8000"
+
+def _public_url() -> str:
+    return (
+        os.getenv("A2A_PUBLIC_URL")
+        or os.getenv("RENDER_EXTERNAL_URL")
+        or "http://localhost:8000"
+    )
 
 
 def get_agent_card() -> AgentCard:
@@ -14,7 +22,7 @@ def get_agent_card() -> AgentCard:
         version="0.1.0",
         supported_interfaces=[
             AgentInterface(
-                url=AGENT_URL,
+                url=_public_url(),
                 protocol_binding=TransportProtocol.JSONRPC,
                 protocol_version=PROTOCOL_VERSION_CURRENT,
             )
