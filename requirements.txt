@@ -1,15 +1,18 @@
-fastapi==0.115.0
+fastapi>=0.115.2,<0.116
 uvicorn[standard]==0.32.0
-# Spec pinned 2.9.0, but every openai-agents release requires pydantic>=2.10.
+# Spec pinned 2.9.0, but openai-agents and a2a-sdk both require pydantic>=2.11
 pydantic==2.14.1
 pydantic-settings==2.6.0
-openai-agents
+# httpx 0.28 removed the deprecated 'proxies' arg; openai <1.55.3 crashes on it
+openai>=1.55.3
+openai-agents>=0.2.0
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
 psycopg[binary]
 slowapi==0.1.9
 pytest==8.3.0
 pytest-asyncio==0.24.0
-httpx==0.27.0
+# a2a-sdk 1.2.3 declares httpx>=0.28.1
+httpx>=0.28.1,<0.29
 python-dotenv==1.0.1
 a2a-sdk[http-server]==1.2.3
